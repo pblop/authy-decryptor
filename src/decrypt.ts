@@ -1,9 +1,10 @@
 // https://www.twilio.com/en-us/blog/how-the-authy-two-factor-backups-work
-import fs from 'fs';
-import crypto from 'crypto';
-import { parse } from 'csv-parse/sync';
-import { getSchemaFormatter } from './schemas';
-import { v4 as uuidv4 } from 'uuid';
+import fs from "node:fs";
+import crypto from "node:crypto";
+import { parse } from "csv-parse/sync";
+import { getSchemaFormatter } from "./schemas";
+import { v4 as uuidv4 } from "uuid";
+import { Buffer } from "node:buffer";
 
 interface TokenRecord {
 	name: string;
@@ -32,7 +33,7 @@ export async function promptHidden(question: string): Promise<string> {
 	return new Promise<string>((resolve) => {
 		const stdin = process.stdin;
 		process.stdout.write(question);
-		let password = '';
+		let password = "";
 
 		if (!stdin.isRaw) stdin.setRawMode(true);
 		stdin.resume();
@@ -40,32 +41,32 @@ export async function promptHidden(question: string): Promise<string> {
 		function onData(char: Buffer) {
 			const ch = char.toString();
 
-			if (ch === '\r' || ch === '\n') {
+			if (ch === "\r" || ch === "\n") {
 				stdin.setRawMode(false);
 				stdin.pause();
-				process.stdout.write('\n');
-				stdin.removeListener('data', onData);
+				process.stdout.write("\n");
+				stdin.removeListener("data", onData);
 				resolve(password);
-			} else if (ch === '\u0003') {
+			} else if (ch === "\u0003") {
 				stdin.setRawMode(false);
 				stdin.pause();
-				stdin.removeListener('data', onData);
-				process.stdout.write('\n');
+				stdin.removeListener("data", onData);
+				process.stdout.write("\n");
 				process.exit();
-			} else if (ch === '\u007f') {
+			} else if (ch === "\u007f") {
 				if (password.length > 0) {
 					password = password.slice(0, -1);
 					process.stdout.clearLine(0);
 					process.stdout.cursorTo(0);
-					process.stdout.write(question + '*'.repeat(password.length));
+					process.stdout.write(question + "*".repeat(password.length));
 				}
 			} else {
 				password += ch;
-				process.stdout.write('*');
+				process.stdout.write("*");
 			}
 		}
 
-		stdin.on('data', onData);
+		stdin.on("data", onData);
 	});
 }
 
@@ -74,7 +75,7 @@ function looksLikeValidOTPSecret(secret: string): boolean {
 }
 
 function decodeSalt(s: string): Buffer {
-	return Buffer.from(s, 'utf8');
+	return Buffer.from(s, "utf8");
 }
 
 export function decryptToken(
@@ -84,18 +85,21 @@ export function decryptToken(
 	passphrase: string,
 	iterations: number = 100000,
 ): string {
-	const encryptedSeed = Buffer.from(encryptedSeedB64, 'base64');
+	const encryptedSeed = Buffer.from(encryptedSeedB64, "base64");
 	const salt = decodeSalt(saltStr);
-	const key = crypto.pbkdf2Sync(passphrase, salt, iterations, 32, 'sha1');
-	const iv = ivHex ? Buffer.from(ivHex, 'hex') : Buffer.alloc(16, 0);
+	const key = crypto.pbkdf2Sync(passphrase, salt, iterations, 32, "sha1");
+	const iv = ivHex ? Buffer.from(ivHex, "hex") : Buffer.alloc(16, 0);
 
-	const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+	const decipher = crypto.createDecipheriv("aes-256-cbc", key, iv);
 
 	try {
-		const decrypted = Buffer.concat([decipher.update(encryptedSeed), decipher.final()]);
-		return decrypted.toString('utf8').trim();
+		const decrypted = Buffer.concat([
+			decipher.update(encryptedSeed),
+			decipher.final(),
+		]);
+		return decrypted.toString("utf8").trim();
 	} catch (err) {
-		console.log('err', err);
+		console.log("err", err);
 		throw err;
 	}
 }
@@ -104,9 +108,9 @@ async function getPassphrase(password?: string): Promise<string | null> {
 	if (password && password.length >= 6) {
 		return password;
 	}
-	const pw = await promptHidden('Enter backup password: ');
+	const pw = await prompt("Enter backup password:");
 	if (pw.length < 6) {
-		console.error('Password must be at least 6 characters long.');
+		console.error("Password must be at least 6 characters long.");
 		return null;
 	}
 	return pw;
@@ -123,12 +127,20 @@ async function tryDecryptAll(
 	for (const row of records) {
 		const iv = getIV(row);
 		const iterations = getIterations(row);
-		const decrypted = decryptToken(row.encrypted_seed, row.salt, iv, passphrase, iterations);
+		const decrypted = decryptToken(
+			row.encrypted_seed,
+			row.salt,
+			iv,
+			passphrase,
+			iterations,
+		);
 		if (!looksLikeValidOTPSecret(decrypted)) {
-			throw new Error(`Invalid OTP secret format for "${row.name || '<unnamed>'}"`);
+			throw new Error(
+				`Invalid OTP secret format for "${row.name || "<unnamed>"}"`,
+			);
 		}
 		output.push({
-			account_type: row.account_type ?? 'authenticator',
+			account_type: row.account_type ?? "authenticator",
 			name: row.name,
 			issuer: row.issuer ?? null,
 			decrypted_seed: decrypted,
@@ -141,7 +153,11 @@ async function tryDecryptAll(
 	return output;
 }
 
-function writeOutput(outputFile: string, tokens: DecryptedToken[], schema: string) {
+function writeOutput(
+	outputFile: string,
+	tokens: DecryptedToken[],
+	schema: string,
+) {
 	const formatter = getSchemaFormatter(schema);
 	if (!formatter) {
 		console.error(`❌ Unsupported schema: ${schema}`);
@@ -150,7 +166,9 @@ function writeOutput(outputFile: string, tokens: DecryptedToken[], schema: strin
 	const outputContent = formatter.format(tokens);
 
 	fs.writeFileSync(outputFile, outputContent);
-	console.log(`✅ Decrypted tokens saved to ${outputFile} with ${schema} schema.`);
+	console.log(
+		`✅ Decrypted tokens saved to ${outputFile} with ${schema} schema.`,
+	);
 }
 
 export async function processMinimalCSV(
@@ -160,9 +178,9 @@ export async function processMinimalCSV(
 	password?: string,
 ): Promise<void> {
 	const csvText = fs
-		.readFileSync(inputFile, 'utf8')
-		.replace(/^"(.*)"$/, '$1')
-		.replace(/\\n/g, '\n');
+		.readFileSync(inputFile, "utf8")
+		.replace(/^"(.*)"$/, "$1")
+		.replace(/\\n/g, "\n");
 
 	const records = parse(csvText, {
 		columns: true,
@@ -171,11 +189,12 @@ export async function processMinimalCSV(
 	}) as TokenRecord[];
 
 	if (records.length === 0) {
-		console.error('❌ No records found in CSV file.');
+		console.error("❌ No records found in CSV file.");
 		return;
 	}
 
 	const passphrase = await getPassphrase(password);
+	console.log("passphrase", passphrase);
 	if (!passphrase) return;
 
 	try {
@@ -187,7 +206,11 @@ export async function processMinimalCSV(
 		);
 		writeOutput(outputFile, decrypted, schema);
 	} catch (err) {
-		console.error('❌ Decryption failed:', err instanceof Error ? err.message : err);
+		console.log("err", err);
+		console.error(
+			"❌ Decryption failed:",
+			err instanceof Error ? err.message : err,
+		);
 	}
 }
 
@@ -199,20 +222,20 @@ export async function processEncryptedJSON(
 ): Promise<void> {
 	let jsonData;
 	try {
-		jsonData = JSON.parse(fs.readFileSync(inputFile, 'utf8'));
+		jsonData = JSON.parse(fs.readFileSync(inputFile, "utf8"));
 	} catch (err) {
-		console.error('❌ Failed to read or parse JSON file:', err);
+		console.error("❌ Failed to read or parse JSON file:", err);
 		return;
 	}
 
 	const records = jsonData.authenticator_tokens as TokenRecord[];
 	if (!Array.isArray(records) || records.length === 0) {
-		console.error('❌ No tokens found in JSON file.');
+		console.error("❌ No tokens found in JSON file.");
 		return;
 	}
 
 	const passphrase = await getPassphrase(password);
-	if (!passphrase) throw 'no passphrase';
+	if (!passphrase) throw "no passphrase";
 
 	try {
 		const decrypted = await tryDecryptAll(
@@ -224,9 +247,12 @@ export async function processEncryptedJSON(
 				return isFinite(iter) && iter > 0 ? iter : 100000;
 			},
 		);
-		console.log('decrypted', decrypted);
+		console.log("decrypted", decrypted);
 		writeOutput(outputFile, decrypted, schema);
 	} catch (err) {
-		console.error('❌ Decryption failed:', err instanceof Error ? err.message : err);
+		console.error(
+			"❌ Decryption failed:",
+			err instanceof Error ? err.message : err,
+		);
 	}
 }
